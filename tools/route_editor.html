@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>🚌 Route + Stops Editor</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #fafbfc;
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 12px;
+    }
+    #wrapper {
+      position: relative;
+      display: inline-block;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+    #bg {
+      position: absolute; top: 0; left: 0;
+      z-index: 0;
+      width: 1200px; height: 900px;
+      border-radius: 8px;
+      opacity: 0.85;
+    }
+    #canvas {
+      position: absolute; top: 0; left: 0;
+      z-index: 1;
+      border: 2px solid #444;
+      border-radius: 8px;
+      cursor: crosshair;
+      background: transparent;
+    }
+    .map-controls { margin: 10px; }
+    #saved {
+      margin-top: 16px;
+      text-align: left;
+      width: 90%; max-width: 900px;
+      margin-inline: auto;
+      background: #fff;
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+    .route-entry { margin: 6px 0; font-family: monospace; }
+    button.active { background: #0074D9; color: #fff; }
+  </style>
+</head>
+<body>
+  <h1>🗺️ Route Editor with Stops</h1>
+  <p>Click to add route points, toggle "Add Stop" to mark stop zones. Backspace undo.</p>
+
+  <input id="routeName" placeholder="Enter route name (e.g. REXL)" />
+  <button id="saveRoute">Save Route</button>
+  <button id="clearCanvas">Clear Canvas</button>
+  <button id="stopMode">Add Stop Mode</button>
+
+  <div class="map-controls">
+    <button id="prevMap">← Previous Map</button>
+    <span id="mapLabel"></span>
+    <button id="nextMap">Next Map →</button>
+  </div>
+
+  <div id="wrapper">
+    <img id="bg" src="A_route.png" alt="Map Background" />
+    <canvas id="canvas" width="1200" height="900"></canvas>
+  </div>
+
+  <br/>
+  <button id="copyJSON">Copy All Routes JSON</button>
+  <button id="downloadJSON">Download JSON</button>
+
+  <h3>Saved Routes:</h3>
+  <div id="saved"></div>
+
+  <script>
+    // ---------- Map array ----------
+    const maps = [
+      { src:"A_route.png",label:"A Route"},
+      { src:"B_route.png",label:"B Route"},
+      { src:"C_route.png",label:"C Route"},
+      { src:"EE_route.png",label:"EE Route"},
+      { src:"F_route.png",label:"F Route"},
+      { src:"H_route.png",label:"H Route"},
+      { src:"LX_route.png",label:"LX Route"},
+      { src:"REXB_route.png",label:"REXB Route"},
+      { src:"REXL_route.png",label:"REXL Route"}
+    ];
+    let currentMap = 0;
+    const bg=document.getElementById('bg'),mapLabel=document.getElementById('mapLabel'),
+          prevMapBtn=document.getElementById('prevMap'),nextMapBtn=document.getElementById('nextMap');
+    function updateMap(){bg.src=maps[currentMap].src;mapLabel.textContent=maps[currentMap].label;}
+    prevMapBtn.onclick=()=>{currentMap=(currentMap-1+maps.length)%maps.length;updateMap();}
+    nextMapBtn.onclick=()=>{currentMap=(currentMap+1)%maps.length;updateMap();}
+
+    // ---------- Canvas ----------
+    const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+    const routeNameInput=document.getElementById('routeName'),
+          saveBtn=document.getElementById('saveRoute'),
+          clearBtn=document.getElementById('clearCanvas'),
+          stopBtn=document.getElementById('stopMode'),
+          savedDiv=document.getElementById('saved'),
+          copyBtn=document.getElementById('copyJSON'),
+          downloadBtn=document.getElementById('downloadJSON');
+
+    let addingStops=false;
+    let points=[],stops=[];
+    let routes={};
+
+    stopBtn.onclick=()=>{addingStops=!addingStops;stopBtn.classList.toggle('active',addingStops);};
+
+    // Load existing routes if available
+    fetch('routes.json').then(r=>r.ok?r.json():{})
+      .then(d=>{routes=d||{};renderSaved();})
+      .catch(()=>console.log("No routes.json found"));
+
+    function draw(){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      // route path
+      if(points.length){
+        ctx.beginPath();ctx.moveTo(points[0][0],points[0][1]);
+        for(let i=1;i<points.length;i++)ctx.lineTo(points[i][0],points[i][1]);
+        ctx.strokeStyle="#0074D9";ctx.lineWidth=3;ctx.stroke();
+      }
+      // stops
+      stops.forEach(([x,y])=>{
+        ctx.beginPath();ctx.arc(x,y,7,0,2*Math.PI);
+        ctx.fillStyle="orange";ctx.fill();
+        ctx.lineWidth=2;ctx.strokeStyle="#444";ctx.stroke();
+      });
+    }
+
+    canvas.addEventListener('click',e=>{
+      const r=canvas.getBoundingClientRect();
+      const p=[e.clientX-r.left,e.clientY-r.top];
+      if(addingStops)stops.push(p);else points.push(p);
+      draw();
+    });
+
+    document.addEventListener('keydown',e=>{
+      if(e.key==='Backspace'){
+        addingStops?stops.pop():points.pop();
+        draw();
+      }
+    });
+
+    saveBtn.onclick=()=>{
+      const name=routeNameInput.value.trim()||maps[currentMap].label;
+      if(points.length<2)return alert('Add at least two route points.');
+      const key=`${name}_${maps[currentMap].label}`;
+      routes[key]={path:points.slice(),stops:stops.slice()};
+      points=[];stops=[];draw();renderSaved();
+    };
+
+    clearBtn.onclick=()=>{points=[];stops=[];draw();};
+
+    function renderSaved(){
+      savedDiv.innerHTML='';
+      Object.entries(routes).forEach(([n,obj])=>{
+        const d=document.createElement('div');
+        d.className='route-entry';
+        d.textContent=`${n}: path(${obj.path.length}) stops(${obj.stops.length})`;
+        savedDiv.appendChild(d);
+      });
+    }
+
+    copyBtn.onclick=()=>{
+      const t=JSON.stringify(routes,null,2);
+      navigator.clipboard.writeText(t);
+      copyBtn.textContent='Copied!';setTimeout(()=>copyBtn.textContent='Copy All Routes JSON',1500);
+    };
+
+    downloadBtn.onclick=()=>{
+      const blob=new Blob([JSON.stringify(routes,null,2)],{type:'application/json'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;a.download='routes.json';a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    updateMap();
+  </script>
+</body>
+</html>

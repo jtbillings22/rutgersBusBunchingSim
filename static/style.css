@@ -1,0 +1,97 @@
+body {
+  font-family: system-ui, sans-serif;
+  background: #fafbfc;
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+h1 {
+  margin-top: 12px;
+}
+
+#wrapper {
+  position: relative;
+  display: inline-block;
+  margin-top: 10px;
+  /* centers horizontally */
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+#bg {
+  position: absolute;
+  top: 0; left: 0;
+  z-index: 0;
+  width: 800px; height: 600px;
+  border-radius: 8px;
+  opacity: 0.85;
+  transition: opacity 0.3s ease;
+}
+
+#canvas {
+  position: absolute;
+  top: 0; left: 0;
+  z-index: 1;
+  border: 2px solid #444;
+  border-radius: 8px;
+  cursor: crosshair;
+  background: transparent;
+}
+
+.map-controls {
+  margin: 10px;
+}
+
+#saved {
+  margin-top: 16px;
+  text-align: left;
+  width: 90%;
+  max-width: 600px;
+  margin-inline: auto;
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+.route-entry {
+  margin: 6px 0;
+  font-family: monospace;
+}
+
+.bus-column::-webkit-scrollbar {
+  width: 6px;
+}
+.bus-column::-webkit-scrollbar-thumb {
+  background-color: rgba(0,0,0,0.2);
+  border-radius: 3px;
+}
+
+#bus-status {
+  width: 300px;
+  font-family: sans-serif;
+  color: #222;
+}
+
+.bus-entry {
+  margin-bottom: 8px;
+}
+
+.progress {
+  height: 8px;
+  background: #ccc;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+
+.progress-bar {
+  height: 100%;
+  background: #28a745;
+  transition: width 0.1s linear;
+}

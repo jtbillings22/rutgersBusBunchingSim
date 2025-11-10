@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Bus Bunching Simulation</title>
+  <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+
+  <style>
+    body {
+      text-align: center;
+      background: #f7f9fb;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 10px; }
+
+    .container {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 20px;
+      margin-top: 10px;
+    }
+
+    canvas {
+      border: 2px solid #333;
+      border-radius: 8px;
+      background: #eef2f5;
+    }
+
+    #sidebar {
+      width: 300px;
+      background: #fafafa;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.1);
+      text-align: left;
+    }
+
+    #speedSlider { width: 100%; }
+
+    /* === Bus Progress (now its own box) === */
+    #busStatusBox {
+      width: 300px;
+      background: #fafafa;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.1);
+      text-align: left;
+      align-self: flex-start;
+    }
+
+    #bus-status {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      grid-auto-rows: minmax(70px, auto);
+      gap: 8px;
+      font-size: 13px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 8px;
+      height: 200px; 
+      overflow-y: auto; /* show scrollbar when more buses exist */
+    }
+
+    .bus-entry {
+      border: 1px solid #eee;
+      border-radius: 6px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .progress {
+      height: 8px;
+      background: #ddd;
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 4px 0;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: #28a745;
+      transition: width 0.1s linear;
+    }
+
+    /* metrics box styling */
+    #metricsBox {
+      margin-top: 20px;
+    }
+
+    #metricsData {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 8px;
+      text-align: left;
+      font-size: 13px;
+      height: 140px;
+      overflow-y: auto;
+    }
+
+    /* Column for progress + stop means */
+    #progressColumn {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 300px;
+    }
+
+    /* Stop Means box */
+    #stopMeansBox { 
+      margin-top: 12px; 
+      text-align: left; 
+      width: 300px;
+      background: #fafafa;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.1);
+    }
+    #stopMeans {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 8px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+    .stop-mean {
+      display: flex;
+      justify-content: space-between;
+      border: 1px solid #eee;
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    .stop-mean .label { font-weight: 600; }
+    .stop-mean .vals { opacity: 0.9; }
+  </style>
+</head>
+
+<body>
+  <h1 id="simTitle">Bus Bunching Simulation</h1>
+
+  <label for="routeSelector"><strong>Choose Route:</strong></label>
+  <select id="routeSelector">
+    <option value="A">A</option>
+    <option value="H">H</option>
+    <option value="REXB">REXB</option>
+    <option value="C">C</option>
+    <option value="LX">LX</option>
+    <option value="B">B</option>
+    <option value="REXL">REXL</option>
+    <option value="EE">EE</option>
+    <option value="F">F</option>
+  </select>
+
+  &nbsp;&nbsp;
+  <label for="pdfSelector"><strong>PDF Type:</strong></label>
+  <select id="pdfSelector">
+    <option value="lognorm" selected>Lognormal</option>
+    <option value="exponential">Exponential</option>
+    <option value="uniform">Uniform</option>
+    <option value="constant">Constant</option>
+    <option value="uniform_nosc">Uniform (no SC)</option>
+    <option value="constant_nosc">Constant (no SC)</option>
+  </select>
+
+  <div class="container">
+    <canvas id="sim" width="1200" height="900"></canvas>
+
+    <!-- 🚌 Live Dwell Progress (separate box) -->
+    <div id="busStatusBox">
+      <h3>🚌 Bus Stop Progress</h3>
+      <div id="bus-status"></div>
+    </div>
+
+    <div id="sidebar">
+
+      <br>
+      <label for="speedSlider">Simulation Speed:</label>
+      <input id="speedSlider" type="range" min="0.1" max="50" step="0.1" value="1">
+      <span id="speedLabel">1.0x</span>
+
+      <div style="margin-top:10px;">
+        <label for="busCount"><strong>Buses:</strong></label>
+        <input id="busCount" type="number" min="1" max="30" value="4" style="width:60px;">
+      </div>
+
+      <!--  NEW METRICS SECTION -->
+      <div id="metricsBox">
+        <h3>Live Metrics</h3>
+        <div id="metricsData">Loading...</div>
+        <canvas id="metricsChart" width="260" height="100" style="margin-top:10px;"></canvas>
+      </div>
+
+      <!-- Long Stop Tracker -->
+      <div id="longStopBox" style="margin-top:12px; background:#fafafa; border:1px solid #ccc; border-radius:8px; padding:10px; box-shadow:0 0 6px rgba(0,0,0,0.1); text-align:left;">
+        <h3>Long Stops (>= 120s)</h3>
+        <div id="longStopContent">Total: 0</div>
+      </div>
+
+      <!-- Stop Means box -->
+      <div id="stopMeansBox">
+        <h3>Stop Means</h3>
+        <div id="stopMeans">Loading...</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,5 @@
+This uncleaned dataset contains a Jupyter Notebook file for getting two of the csvs - 'bus_breaks.csv' and 'ridership.csv' - from the rubus API. The dataset also includes three additional csv files: routes.csv, stops.csv, and vehicles.csv.
+
+See the Jupyter Notebook file for further description of the dataset.
+
+Feel free to use data cleaning, visualization, and predictive modeling to analyze the dataset and find interesting patterns.
