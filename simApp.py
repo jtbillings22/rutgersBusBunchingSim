@@ -63,22 +63,61 @@ app = Flask(__name__)
 LAST_UPDATE_TIME = time.time()
 CURRENT_ROUTE_ID = "A" # global route_id
 SIM_SPEED = 1.0
+CURRENT_PDF_TYPE = "lognorm"
 EVENT_LOG = []     # stores stop events
 MAX_EVENTS = 100   # cap log size to avoid memory bloat
-METRICS = {
-    "frame_count": 0,
-    "bunch_frames": 0,
-    "cluster_frames": 0,
-    "current": {
-        "headway_score": 0.0,
-        "cluster_score": 0.0,
+SIM_TIMER = {
+    "active": False,
+    "duration": 0.0,
+    "expires_at": None,
+    "finished": False
+}
+
+def _new_metrics_state():
+    """Return a fresh metrics container for a new simulation run."""
+    return {
+        "frame_count": 0,
+        "bunch_frames": 0,
+        "cluster_frames": 0,
+        "bunch_score_sum": 0.0,
+        "current": {
+            "headway_score": 0.0,
+            "cluster_score": 0.0,
         "bunch_score": 0.0,
+        "bunch_score_avg": 0.0,
         "bunch_count": 0,
         "cac_count": 0,
-        "liv_count": 0
-    },
-    "history": []
-}
+        "liv_count": 0,
+        "bunch_ratio": 0.0,
+        "cluster_ratio": 0.0,
+        "long_stop_count": 0
+        },
+        "history": []
+    }
+
+METRICS = _new_metrics_state()
+
+def _reset_timer_state():
+    """Disable any active timer and clear finished flags."""
+    SIM_TIMER["active"] = False
+    SIM_TIMER["duration"] = 0.0
+    SIM_TIMER["expires_at"] = None
+    SIM_TIMER["finished"] = False
+
+def _timer_status(now=None):
+    """Return a serializable snapshot of the timer."""
+    now = now or time.time()
+    remaining = None
+    if SIM_TIMER["active"] and SIM_TIMER["expires_at"]:
+        remaining = max(0.0, SIM_TIMER["expires_at"] - now)
+    elif SIM_TIMER["finished"]:
+        remaining = 0.0
+    return {
+        "active": SIM_TIMER["active"],
+        "finished": SIM_TIMER["finished"],
+        "duration": SIM_TIMER["duration"],
+        "remaining": remaining
+    }
 
 
 # === Load routes.json ===
@@ -118,6 +157,65 @@ def get_route(prefix):
             return ROUTES[key]
     raise KeyError(f"No route found for '{prefix}'")
 
+
+def _apply_route_state(route_id):
+    """Load path/norm/stop data for the active route."""
+    global CURRENT_ROUTE_ID, PATH, NORM, STOPS
+    CURRENT_ROUTE_ID = route_id
+    route_data = ROUTES[route_id]
+    PATH = route_data["path"]
+    NORM = route_data["norm"]
+    STOPS = route_data["stops"]
+
+
+def _apply_pdf_type_to_models(pdf_type):
+    """Propagate the chosen dwell distribution to every bus model."""
+    for rid, bus in buses.items():
+        try:
+            bus.set_pdf_type(pdf_type)
+        except Exception as exc:
+            print(f"[WARN] Failed to set pdf '{pdf_type}' for route {rid}: {exc}")
+
+
+def _build_runtime_buses_for_route(route_id):
+    """Create evenly spaced runtime buses for the active route."""
+    global runtime_buses
+    route_data = ROUTES[route_id]
+    model = buses.get(route_id, next(iter(buses.values())))
+    count = max(1, int(NUM_BUSES))
+    runtime_buses = []
+    for i in range(count):
+        runtime_buses.append({
+            "id": f"Bus {i+1}",
+            "route_id": route_id,
+            "path": route_data["path"],
+            "stops": route_data["stops"],
+            "pos": i / count,
+            "speed": 0.002 + random.random() * 0.002,
+            "wait": 0.0,
+            "last_stop": None,
+            "model": model,
+            "at_stop": False,
+            "dwell_time": 0.0,
+            "last_pos": None,
+            "last_stop_id": None,
+            "total_dwell": 0.0
+        })
+
+
+def reset_simulation(route_id=None):
+    """Reset buses, metrics, and logs so the sim restarts fresh."""
+    global EVENT_LOG, METRICS, LAST_UPDATE_TIME
+    target_route = route_id or CURRENT_ROUTE_ID
+    if target_route not in ROUTES:
+        raise KeyError(f"Unknown route '{target_route}'")
+    _apply_route_state(target_route)
+    _build_runtime_buses_for_route(target_route)
+    EVENT_LOG = []
+    METRICS = _new_metrics_state()
+    _reset_timer_state()
+    LAST_UPDATE_TIME = time.time()
+
 def init_default_sim(route_id="A"):
     """Initialize a valid simulation state on startup."""
     global CURRENT_ROUTE_ID, PATH, NORM, STOPS, runtime_buses
@@ -154,40 +252,10 @@ for key, data in ROUTES.items():
     data["norm"] = norm
     data["stops"] = stops
 
-route_data = ROUTES["A"] # make this dynamic stop
-PATH = route_data["path"]
-NORM = route_data["norm"]
-STOPS = route_data["stops"]
-
-# initialize bus states
-NUM_BUSES = 4 # we want to dynamically choose this num_buses, but we can default to 4 buses.
+NUM_BUSES = 4  # default bus count; can be made dynamic later
 runtime_buses = []
-
-for route_id, bus_model in buses.items():
-    route_data = get_route(route_id)
-    PATH = route_data["path"]
-
-    # normalize stops into dict list
-    stops = []
-    for i, s in enumerate(route_data["stops"], start=1):
-        if isinstance(s, dict):
-            stops.append(s)
-        else:
-            stops.append({"id": f"S{i}", "x": s[0], "y": s[1]})
-
-    # create several runtime buses for this route
-    for i in range(NUM_BUSES):
-        runtime_buses.append({
-            "id": f"Bus {i+1}",
-            "route_id": route_id,
-            "path": PATH,
-            "stops": stops,
-            "pos": i / NUM_BUSES,
-            "speed": 0.002 + random.random() * 0.002,
-            "wait": 0,
-            "last_stop": None,
-            "model": bus_model  # attach your real busRoute object here
-        })
+_apply_pdf_type_to_models(CURRENT_PDF_TYPE)
+reset_simulation(CURRENT_ROUTE_ID)
 
 @app.route("/")
 def index():
@@ -197,18 +265,18 @@ def index():
 @app.route("/set_route", methods=["POST"])
 def set_route():
     # declare all globals 
-    global CURRENT_ROUTE_ID, runtime_buses, PATH, NORM, STOPS
+    global CURRENT_ROUTE_ID
     
     # debugging 
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True) or {}
         print("[set_route] Raw data:", request.data)
         print("[set_route] Parsed JSON:", data)
     except Exception as e:
         print("[set_route] JSON parse error:", e)
         return jsonify({"error": "Could not parse JSON"}), 400
 
-    route_id = (data or {}).get("route_id")
+    route_id = data.get("route_id")
     print("[set_route] route_id received:", route_id)
 
     if not route_id:
@@ -217,42 +285,7 @@ def set_route():
         print("[set_route] Invalid route id! Available keys:", list(ROUTES.keys()))
         return jsonify({"error": f"Invalid route '{route_id}'"}), 400
 
-
-
-    data = request.get_json(force=True)
-    route_id = data.get("route_id")
-
-    if not route_id:
-        return jsonify({"error": "Missing route_id"}), 400
-    if route_id not in ROUTES:
-        return jsonify({"error": f"Invalid route '{route_id}'"}), 400
-
-    CURRENT_ROUTE_ID = route_id
-    route_data = ROUTES[route_id]
-
-    # update global route data
-    PATH = route_data["path"]
-    NORM = route_data["norm"]
-    STOPS = route_data["stops"]
-
-    #  reset runtime buses for the new route
-    runtime_buses = []
-    for i in range(NUM_BUSES):
-        runtime_buses.append({
-            "id": f"Bus {i+1}",
-            "route_id": route_id,
-            "path": PATH,
-            "stops": STOPS,
-            "pos": i / NUM_BUSES,
-            "speed": 0.002 + random.random() * 0.002,
-            "wait": 0,
-            "last_stop": None,
-            "model": list(buses.values())[0],
-            "at_stop": False,
-            "dwell_time": 0,
-            "last_pos": None
-        })
-
+    reset_simulation(route_id)
     print(f"[set_route] Route switched to {CURRENT_ROUTE_ID}, PATH len={len(PATH)}, NORM len={len(NORM)}")
     return jsonify({"ok": True, "route": CURRENT_ROUTE_ID})
 
@@ -266,7 +299,8 @@ def meta():
         "route_id": active_route_id,
         "num_buses": len(active_buses),
         "num_stops": len(active_buses[0]["stops"]) if active_buses else 0,
-        "speed_factor": SIM_SPEED
+        "speed_factor": SIM_SPEED,
+        "timer": _timer_status()
     }
     return jsonify(info)
 
@@ -279,6 +313,17 @@ def positions():
     now = time.time()
     dt = (now - LAST_UPDATE_TIME) * SIM_SPEED
     LAST_UPDATE_TIME = now
+    if SIM_TIMER["active"] and SIM_TIMER["expires_at"]:
+        remaining_after = SIM_TIMER["expires_at"] - now
+        if remaining_after <= 0:
+            allowed = max(0.0, dt + remaining_after)
+            dt = allowed
+            SIM_TIMER["active"] = False
+            SIM_TIMER["expires_at"] = None
+            SIM_TIMER["finished"] = True
+    elif SIM_TIMER["finished"]:
+        dt = 0.0
+    timer_paused = SIM_TIMER["finished"] and not SIM_TIMER["active"] and dt == 0.0
 
     active_buses = [bus for bus in runtime_buses if bus["route_id"] == active_route_id]
     
@@ -342,6 +387,12 @@ def positions():
                     if len(EVENT_LOG) > MAX_EVENTS:
                         EVENT_LOG = EVENT_LOG[-MAX_EVENTS:]
 
+                    try:
+                        if float(dwell) >= 120.0:
+                            METRICS["current"]["long_stop_count"] = METRICS["current"].get("long_stop_count", 0) + 1
+                    except Exception:
+                        pass
+
                     print(f"{bus['id']} reached stop {stop_id} → dwell {dwell:.1f}s")
                 except Exception as e:
                     print(f"[WARN] Could not sample stop {stop_id} for route {bus['route_id']}: {e}")
@@ -357,9 +408,10 @@ def positions():
                 if ((x - lx)**2 + (y - ly)**2)**0.5 > 20:
                     bus["last_stop_id"] = None
 
-        # small random speed variation
-        bus["speed"] += random.uniform(-0.00002, 0.00002)
-        bus["speed"] = max(0.002, min(0.004, bus["speed"]))
+        # small random speed variation only when sim is advancing
+        if dt > 0:
+            bus["speed"] += random.uniform(-0.00002, 0.00002)
+            bus["speed"] = max(0.002, min(0.004, bus["speed"]))
 
 
     # backend function for the dwell time progress bar
@@ -398,76 +450,79 @@ def positions():
         })    
 
 
-    # this needs some serious updating...
     # --- METRICS COMPUTATION BLOCK ---
-    METRICS["frame_count"] += 1
-    route_positions = []
+    if not timer_paused:
+        METRICS["frame_count"] += 1
+        route_positions = [bus["pos"] for bus in active_buses]
+        route_positions = sorted(route_positions)
 
-    # collect positions along route for active route
-    for bus in active_buses:
-        route_positions.append(bus["pos"])
-    route_positions = sorted(route_positions)
+        n = len(route_positions)
+        expected_headway = 1.0 / n if n > 0 else 1.0
+        tau = 0.3
 
-    # expected headway (uniform spacing)
-    n = len(route_positions)
-    expected_headway = 1.0 / n if n > 0 else 1.0
-    tau = 0.3
-
-    # compute actual headways (distance between consecutive buses on loop)
     headways = [ (route_positions[(i+1)%n] - route_positions[i]) % 1.0 for i in range(n) ]
     bunched = [h < tau * expected_headway for h in headways]
     bunch_count = sum(bunched)
 
-    headway_score = bunch_count / n if n > 0 else 0.0
+    if n > 0 and expected_headway > 0:
+        closeness = [max(0.0, 1.0 - (h / expected_headway)) for h in headways]
+        headway_score = sum(closeness) / n
+    else:
+        headway_score = 0.0
 
-    # Campus clustering
-    # define zone ranges (example: normalized along route)
-    CAV_ZONE = (0.1, 0.4)   # CASC–SAC region (adjust for your route)
-    BUSCH_ZONE = (0.6, 0.9)   # Plaza–Quads region
+        CAV_ZONE = (0.1, 0.4)
+        BUSCH_ZONE = (0.6, 0.9)
 
-    cav_count = sum(CAV_ZONE[0] <= p <= CAV_ZONE[1] for p in route_positions)
-    busch_count = sum(BUSCH_ZONE[0] <= p <= BUSCH_ZONE[1] for p in route_positions)
-    cluster_score = 0.0
-    cluster_event = False
-    if n > 0 and (cav_count >= (2/3)*n or busch_count >= (2/3)*n):
-        cluster_score = 1.0
-        cluster_event = True
+        cav_count = sum(CAV_ZONE[0] <= p <= CAV_ZONE[1] for p in route_positions)
+        busch_count = sum(BUSCH_ZONE[0] <= p <= BUSCH_ZONE[1] for p in route_positions)
+        cluster_score = 0.0
+        cluster_event = False
+        if n > 0 and (cav_count >= (2/3)*n or busch_count >= (2/3)*n):
+            cluster_score = 1.0
+            cluster_event = True
 
-    # --- Weighted bunch score ---
-    bunch_score = 0.4 * headway_score + 0.6 * cluster_score
+        bunch_score = 0.4 * headway_score + 0.6 * cluster_score
+        METRICS["bunch_score_sum"] += bunch_score
+        bunch_score_avg = (
+            METRICS["bunch_score_sum"] / METRICS["frame_count"]
+            if METRICS["frame_count"] > 0 else 0.0
+        )
 
-    # --- Update cumulative ratios ---
-    if bunch_count > 0:
-        METRICS["bunch_frames"] += 1
-    if cluster_event:
-        METRICS["cluster_frames"] += 1
+        if bunch_count > 0:
+            METRICS["bunch_frames"] += 1
+        if cluster_event:
+            METRICS["cluster_frames"] += 1
 
-    # compute running ratios
-    bunch_ratio = METRICS["bunch_frames"] / METRICS["frame_count"]
-    cluster_ratio = METRICS["cluster_frames"] / METRICS["frame_count"]
+        bunch_ratio = METRICS["bunch_frames"] / METRICS["frame_count"]
+        cluster_ratio = METRICS["cluster_frames"] / METRICS["frame_count"]
 
-    # store snapshot
-    METRICS["current"].update({
-        "headway_score": headway_score,
-        "cluster_score": cluster_score,
-        "bunch_score": bunch_score,
+        METRICS["current"].update({
+            "headway_score": headway_score,
+            "cluster_score": cluster_score,
+            "bunch_score": bunch_score,
+            "bunch_score_avg": bunch_score_avg,
         "bunch_count": bunch_count,
         "cac_count": cav_count,
         "liv_count": busch_count,
         "bunch_ratio": bunch_ratio,
-        "cluster_ratio": cluster_ratio
-    })
-    METRICS["history"].append(METRICS["current"].copy())
-    if len(METRICS["history"]) > 1000:
-        METRICS["history"].pop(0)
+        "cluster_ratio": cluster_ratio,
+        "long_stop_count": METRICS["current"].get("long_stop_count", 0)
+        })
+        METRICS["history"].append(METRICS["current"].copy())
+        if len(METRICS["history"]) > 1000:
+            METRICS["history"].pop(0)
 
     print(f"[DEBUG] sending to frontend: {len(serializable_buses)} buses, {len(path)} path points")
+
+    timer_info = _timer_status(now)
 
     return jsonify({
         "buses": serializable_buses,
         "path": path,
         "norm": NORM,
-        "stops": stops
+        "stops": stops,
+        "route": CURRENT_ROUTE_ID,
+        "timer": timer_info
     })
 
 @app.route("/metrics")
@@ -483,11 +538,50 @@ def set_speed():
     global SIM_SPEED
     try:
         factor = float(request.json.get("factor", 1.0))
-        SIM_SPEED = max(0.1, min(factor, 50.0))
+        SIM_SPEED = max(0.1, min(factor, 200.0))
         print(f"Simulation speed set to {SIM_SPEED}x")
         return jsonify({"ok": True, "speed_factor": SIM_SPEED})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.route("/pdf", methods=["POST"])
+def set_pdf_type():
+    global CURRENT_PDF_TYPE
+    data = request.get_json(silent=True) or {}
+    pdf_type = str(data.get("type", CURRENT_PDF_TYPE)).strip().lower()
+    allowed = {"lognorm", "exponential", "uniform", "constant", "uniform_nosc", "constant_nosc"}
+    if pdf_type not in allowed:
+        return jsonify({"error": f"Invalid pdf type. Allowed: {sorted(list(allowed))}"}), 400
+    CURRENT_PDF_TYPE = pdf_type
+    _apply_pdf_type_to_models(pdf_type)
+    reset_simulation()
+    print(f"[pdf] Distribution switched to {pdf_type}; simulation restarted.")
+    return jsonify({"ok": True, "pdf_type": CURRENT_PDF_TYPE})
+
+
+@app.route("/timer", methods=["POST"])
+def configure_timer():
+    data = request.get_json(silent=True) or {}
+    if "minutes" not in data:
+        return jsonify({"error": "Missing 'minutes' field"}), 400
+    try:
+        minutes = float(data.get("minutes", 0))
+    except Exception:
+        return jsonify({"error": "Invalid minutes value"}), 400
+
+    if minutes <= 0:
+        _reset_timer_state()
+        print("[timer] Timer cleared")
+        return jsonify({"ok": True, "timer": _timer_status()})
+
+    duration = max(0.0, minutes) * 60.0
+    SIM_TIMER["active"] = True
+    SIM_TIMER["duration"] = duration
+    SIM_TIMER["expires_at"] = time.time() + duration
+    SIM_TIMER["finished"] = False
+    print(f"[timer] Timer started for {minutes:.2f} minutes")
+    return jsonify({"ok": True, "timer": _timer_status()})
 
 
 def interpolate(points, norm, t):

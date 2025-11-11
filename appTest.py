@@ -69,19 +69,59 @@ STOP_STATS = {}
 # Per-frame data
 EVENT_LOG = []
 MAX_EVENTS = 100
-METRICS = {
-    "current": {
-        "headway_score": 0.0,
-        "cluster_score": 0.0,
-        "bunch_score": 0.0,
-        "bunch_count": 0,
-        "cac_count": 0,
-        "liv_count": 0,
-        "bunch_ratio": 0.0,
-        "cluster_ratio": 0.0,
-        "long_stop_count": 0,
+def _new_metrics_state():
+    return {
+        "frame_count": 0,
+        "bunch_score_sum": 0.0,
+        "current": {
+            "headway_score": 0.0,
+            "cluster_score": 0.0,
+            "bunch_score": 0.0,
+            "bunch_score_avg": 0.0,
+            "bunch_count": 0,
+            "cac_count": 0,
+            "liv_count": 0,
+            "bunch_ratio": 0.0,
+            "cluster_ratio": 0.0,
+            "long_stop_count": 0,
+        }
     }
+
+
+def _reset_metrics_state():
+    global METRICS
+    METRICS = _new_metrics_state()
+
+
+_reset_metrics_state()
+SIM_TIMER = {
+    "active": False,
+    "duration": 0.0,
+    "expires_at": None,
+    "finished": False,
 }
+
+
+def _reset_timer_state():
+    SIM_TIMER["active"] = False
+    SIM_TIMER["duration"] = 0.0
+    SIM_TIMER["expires_at"] = None
+    SIM_TIMER["finished"] = False
+
+
+def _timer_status(now=None):
+    now = now or time.time()
+    remaining = None
+    if SIM_TIMER["active"] and SIM_TIMER["expires_at"]:
+        remaining = max(0.0, SIM_TIMER["expires_at"] - now)
+    elif SIM_TIMER["finished"]:
+        remaining = 0.0
+    return {
+        "active": SIM_TIMER["active"],
+        "finished": SIM_TIMER["finished"],
+        "duration": SIM_TIMER["duration"],
+        "remaining": remaining,
+    }
 
 # Active route data (updated on set_route)
 PATH = []
@@ -258,6 +298,10 @@ def _init_route_state(route_id):
 
     # build buses using current NUM_BUSES
     _build_runtime_buses(NUM_BUSES)
+    _reset_metrics_state()
+    _reset_timer_state()
+    global LAST_UPDATE_TIME
+    LAST_UPDATE_TIME = time.time()
 
 # unnecessary, we already normalzized
 # Normalize every route once to speed up switching
@@ -292,6 +336,19 @@ def positions():
     now = time.time()
     dt = (now - LAST_UPDATE_TIME) * SIM_SPEED
     LAST_UPDATE_TIME = now
+    timer_paused = False
+    if SIM_TIMER["active"] and SIM_TIMER["expires_at"]:
+        remaining_after = SIM_TIMER["expires_at"] - now
+        if remaining_after <= 0:
+            allowed = max(0.0, dt + remaining_after)
+            dt = allowed
+            SIM_TIMER["active"] = False
+            SIM_TIMER["expires_at"] = None
+            SIM_TIMER["finished"] = True
+            timer_paused = dt == 0.0
+    elif SIM_TIMER["finished"]:
+        dt = 0.0
+        timer_paused = True
 
     active = [b for b in runtime_buses if b["route_id"] == CURRENT_ROUTE_ID]
     path = PATH
@@ -408,45 +465,58 @@ def positions():
                     break
         buses_out.append({"id": b["id"], "pos": b["pos"], "status": status})
 
-    # Update metrics based on current positions
-    try:
-        n = len(active)
-        if n >= 2:
-            positions = sorted([b["pos"] % 1.0 for b in active])
-            gaps = []
-            for i in range(n - 1):
-                gaps.append(positions[i + 1] - positions[i])
-            gaps.append((positions[0] + 1.0) - positions[-1])
-            ideal = 1.0 / n
-            mean_dev = sum(abs(g - ideal) for g in gaps) / n
-            headway_score = max(0.0, 1.0 - (mean_dev / max(ideal, 1e-9)))
+    # Update metrics based on current positions (only if sim is advancing)
+    if not timer_paused:
+        try:
+            n = len(active)
+            if n >= 2:
+                positions = sorted([b["pos"] % 1.0 for b in active])
+                gaps = []
+                for i in range(n - 1):
+                    gaps.append(positions[i + 1] - positions[i])
+                gaps.append((positions[0] + 1.0) - positions[-1])
+                ideal = 1.0 / n
+                bunch_thresh = 0.5 * ideal
+                cluster_thresh = 0.25 * ideal
+                bunch_count = sum(1 for g in gaps if g < bunch_thresh)
+                bunch_ratio = bunch_count / n
+                cluster_count = sum(1 for g in gaps if g < cluster_thresh)
+                cluster_ratio = cluster_count / n
 
-            bunch_thresh = 0.5 * ideal
-            cluster_thresh = 0.25 * ideal
-            bunch_count = sum(1 for g in gaps if g < bunch_thresh)
-            bunch_ratio = bunch_count / n
-            cluster_count = sum(1 for g in gaps if g < cluster_thresh)
-            cluster_ratio = cluster_count / n
+                closeness = [max(0.0, 1.0 - (g / ideal)) for g in gaps]
+                headway_score = sum(closeness) / n
 
-            METRICS["current"].update({
-                "headway_score": float(headway_score),
-                "bunch_score": float(bunch_ratio),
-                "cluster_score": float(cluster_ratio),
-                "bunch_count": int(bunch_count),
-                "bunch_ratio": float(bunch_ratio),
-                "cluster_ratio": float(cluster_ratio),
-            })
+                METRICS["current"].update({
+                    "headway_score": float(headway_score),
+                    "bunch_score": float(bunch_ratio),
+                    "cluster_score": float(cluster_ratio),
+                    "bunch_count": int(bunch_count),
+                    "bunch_ratio": float(bunch_ratio),
+                    "cluster_ratio": float(cluster_ratio),
+                })
+            else:
+                METRICS["current"].update({
+                    "headway_score": 0.0,
+                    "bunch_score": 0.0,
+                    "cluster_score": 0.0,
+                    "bunch_count": 0,
+                    "bunch_ratio": 0.0,
+                    "cluster_ratio": 0.0,
+                })
+        except Exception:
+            pass
+
+        METRICS["frame_count"] += 1
+        curr_bunch = METRICS["current"].get("bunch_score", 0.0)
+        METRICS["bunch_score_sum"] += curr_bunch
+        if METRICS["frame_count"] > 0:
+            METRICS["current"]["bunch_score_avg"] = (
+                METRICS["bunch_score_sum"] / METRICS["frame_count"]
+            )
         else:
-            METRICS["current"].update({
-                "headway_score": 0.0,
-                "bunch_score": 0.0,
-                "cluster_score": 0.0,
-                "bunch_count": 0,
-                "bunch_ratio": 0.0,
-                "cluster_ratio": 0.0,
-            })
-    except Exception:
-        pass
+            METRICS["current"]["bunch_score_avg"] = 0.0
+
+    timer_info = _timer_status(now)
 
     return jsonify({
         "path": PATH,
@@ -454,6 +524,7 @@ def positions():
         "stops": STOPS,
         "buses": buses_out,
         "route": CURRENT_ROUTE_ID,
+        "timer": timer_info,
     })
 
 
@@ -464,6 +535,7 @@ def meta():
         "num_buses": len([b for b in runtime_buses if b["route_id"] == CURRENT_ROUTE_ID]),
         "num_stops": len(STOPS),
         "speed_factor": SIM_SPEED,
+        "timer": _timer_status(),
     })
 
 
@@ -485,7 +557,7 @@ def set_speed():
         factor = float(data.get("factor", 1.0))
     except Exception:
         return jsonify({"error": "Invalid factor"}), 400
-    SIM_SPEED = max(0.1, min(factor, 50.0))
+    SIM_SPEED = max(0.1, min(factor, 200.0))
     return jsonify({"ok": True, "speed_factor": SIM_SPEED})
 
 @app.route("/pdf", methods=["POST"])
@@ -504,7 +576,34 @@ def set_pdf_type():
         except Exception:
             # continue even if a specific route lacks data for a type
             continue
+    _build_runtime_buses(NUM_BUSES)
+    _reset_metrics_state()
+    _reset_timer_state()
+    global LAST_UPDATE_TIME
+    LAST_UPDATE_TIME = time.time()
     return jsonify({"ok": True, "pdf_type": CURRENT_PDF_TYPE})
+
+
+@app.route("/timer", methods=["POST"])
+def configure_timer():
+    data = request.get_json(silent=True) or {}
+    if "minutes" not in data:
+        return jsonify({"error": "Missing 'minutes' field"}), 400
+    try:
+        minutes = float(data.get("minutes", 0))
+    except Exception:
+        return jsonify({"error": "Invalid minutes value"}), 400
+
+    if minutes <= 0:
+        _reset_timer_state()
+        return jsonify({"ok": True, "timer": _timer_status()})
+
+    duration = max(0.0, minutes) * 60.0
+    SIM_TIMER["active"] = True
+    SIM_TIMER["duration"] = duration
+    SIM_TIMER["expires_at"] = time.time() + duration
+    SIM_TIMER["finished"] = False
+    return jsonify({"ok": True, "timer": _timer_status()})
 
 @app.route("/buses", methods=["POST"])
 def set_bus_count():
