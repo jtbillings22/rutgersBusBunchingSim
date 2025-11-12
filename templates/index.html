@@ -30,7 +30,7 @@
     }
 
     #sidebar {
-      width: 300px;
+      width: 360px;
       background: #fafafa;
       border: 1px solid #ccc;
       border-radius: 8px;
@@ -102,7 +102,7 @@
       padding: 8px;
       text-align: left;
       font-size: 13px;
-      height: 140px;
+      height: 200px;
       overflow-y: auto;
     }
 
@@ -177,7 +177,7 @@
   </select>
 
   <div class="container">
-    <canvas id="sim" width="1200" height="900"></canvas>
+    <canvas id="sim" width="900" height="780" style="width:100%; max-width:920px;"></canvas>
 
     <!-- 🚌 Live Dwell Progress (separate box) -->
     <div id="busStatusBox">
@@ -189,7 +189,7 @@
 
       <br>
       <label for="speedSlider">Simulation Speed:</label>
-      <input id="speedSlider" type="range" min="0.1" max="50" step="0.1" value="1">
+      <input id="speedSlider" type="range" min="0.1" max="200" step="0.1" value="1">
       <span id="speedLabel">1.0x</span>
 
       <div style="margin-top:10px;">
@@ -197,11 +197,24 @@
         <input id="busCount" type="number" min="1" max="30" value="4" style="width:60px;">
       </div>
 
+      <div id="timerBox" style="margin-top:12px; background:#f5f6ff; border:1px solid #b0c4ff; border-radius:8px; padding:10px; box-shadow:0 0 6px rgba(0,0,0,0.08);">
+        <h3>Run Timer</h3>
+        <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+          <input id="timerMinutes" type="number" min="0" step="0.5" value="5" style="width:70px;">
+          <span>minutes</span>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button id="startTimerBtn">Start</button>
+          <button id="stopTimerBtn" type="button">Stop</button>
+        </div>
+        <div id="timerStatus" style="margin-top:6px; font-size:0.9rem; color:#333;">Timer off</div>
+      </div>
+
       <!--  NEW METRICS SECTION -->
       <div id="metricsBox">
         <h3>Live Metrics</h3>
         <div id="metricsData">Loading...</div>
-        <canvas id="metricsChart" width="260" height="100" style="margin-top:10px;"></canvas>
+        <canvas id="metricsChart" width="360" height="320" style="margin-top:10px; width:100%; max-width:420px;"></canvas>
       </div>
 
       <!-- Long Stop Tracker -->

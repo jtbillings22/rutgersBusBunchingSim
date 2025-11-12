@@ -23,6 +23,10 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   let lastData = null;
+  const timerStatusEl = document.getElementById('timerStatus');
+  const timerMinutesInput = document.getElementById('timerMinutes');
+  const startTimerBtn = document.getElementById('startTimerBtn');
+  const stopTimerBtn = document.getElementById('stopTimerBtn');
 
   // Drawing loop
   async function drawFrame() {
@@ -43,6 +47,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const stops = data.stops;
       const buses = data.buses;
       const norm = data.norm || route.map((_, i) => i / (route.length - 1));
+      updateTimerStatus(data.timer);
 
       // temp console log sanity check
       console.log({
@@ -136,6 +141,38 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  function formatDuration(seconds) {
+    if (!Number.isFinite(seconds)) return null;
+    const total = Math.max(0, Math.floor(seconds));
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  function updateTimerStatus(timer) {
+    if (!timerStatusEl) return;
+    if (!timer || typeof timer !== 'object') {
+      // No new data—preserve whatever we were showing.
+      return;
+    }
+    if (timer.active && Number.isFinite(timer.remaining)) {
+      const label = formatDuration(timer.remaining) || '...';
+      timerStatusEl.textContent = `Running – ${label} remaining`;
+    } else if (timer.finished) {
+      timerStatusEl.textContent = 'Timer finished';
+    } else {
+      timerStatusEl.textContent = 'Timer off';
+    }
+  }
+
+  function resetVisualizationState() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    lastData = null;
+    bunchHistory = [];
+    avgBunchHistory = [];
+    drawMetricsChart();
+  }
+
 
   // dynamic route selector!
   const routeSelector = document.getElementById("routeSelector");
@@ -150,10 +187,7 @@ window.addEventListener("DOMContentLoaded", () => {
       body: JSON.stringify({ route_id: newRoute }),
     });
 
-    // clear old route visuals
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    lastData = null;
-
+    resetVisualizationState();
 
     // optionally refresh immediately
     const res = await fetch("/meta");
@@ -191,10 +225,12 @@ window.addEventListener("DOMContentLoaded", () => {
       if (busCountEl && typeof meta.num_buses === 'number') {
         busCountEl.value = meta.num_buses;
       }
+      updateTimerStatus(meta.timer);
   }
 
   // === METRICS VISUALIZATION ===
   let bunchHistory = [];
+  let avgBunchHistory = [];
   const mCanvas = document.getElementById('metricsChart');
   const mCtx = mCanvas.getContext('2d');
 
@@ -204,18 +240,30 @@ window.addEventListener("DOMContentLoaded", () => {
       const m = await res.json();
 
       // textual display
+      const bunchScore = Number.isFinite(m.bunch_score) ? m.bunch_score : 0;
+      const avgBunchScore = Number.isFinite(m.bunch_score_avg) ? m.bunch_score_avg : bunchScore;
+      const headwayScore = Number.isFinite(m.headway_score) ? m.headway_score : 0;
+      const clusterScore = Number.isFinite(m.cluster_score) ? m.cluster_score : 0;
+      const bunchCount = Number.isFinite(m.bunch_count) ? m.bunch_count : 0;
+      const cavCount = Number.isFinite(m.cac_count) ? m.cac_count : 0;
+      const livCount = Number.isFinite(m.liv_count) ? m.liv_count : 0;
+      const bunchRatio = Number.isFinite(m.bunch_ratio) ? m.bunch_ratio : 0;
+      const clusterRatio = Number.isFinite(m.cluster_ratio) ? m.cluster_ratio : 0;
+
       document.getElementById('metricsData').innerHTML = `
-        <b>Bunch Score:</b> ${m.bunch_score.toFixed(2)}<br>
-        Headway Score: ${m.headway_score.toFixed(2)}<br>
-        Cluster Score: ${m.cluster_score.toFixed(2)}<br>
-        Bunched Buses: ${m.bunch_count}<br>
-        CAV: ${m.cac_count} | BUSCH: ${m.liv_count}<br>
-        <small>Bunch Ratio: ${(m.bunch_ratio * 100).toFixed(1)}% • Cluster Ratio: ${(m.cluster_ratio * 100).toFixed(1)}%</small>
+        <b>Bunch Score:</b> ${bunchScore.toFixed(2)}<br>
+        Avg Bunch Score: ${avgBunchScore.toFixed(2)}<br>
+        Headway Score: ${headwayScore.toFixed(2)}<br>
+        Cluster Score: ${clusterScore.toFixed(2)}<br>
+        Bunched Buses: ${bunchCount}<br>
+        <small>Bunch Ratio: ${(bunchRatio * 100).toFixed(1)}% • Cluster Ratio: ${(clusterRatio * 100).toFixed(1)}%</small>
       `;
 
       // update chart history
-      bunchHistory.push(m.bunch_score);
+      bunchHistory.push(bunchScore);
+      avgBunchHistory.push(avgBunchScore);
       if (bunchHistory.length > 100) bunchHistory.shift();
+      if (avgBunchHistory.length > 100) avgBunchHistory.shift();
 
       drawMetricsChart();
 
@@ -234,35 +282,94 @@ window.addEventListener("DOMContentLoaded", () => {
     const h = mCanvas.height;
     mCtx.clearRect(0, 0, w, h);
 
-    if (bunchHistory.length < 2) return;
+    if (bunchHistory.length < 2 && avgBunchHistory.length < 2) return;
+
+    const padding = { top: 15, right: 20, bottom: 40, left: 50 };
+    const axisLeft = padding.left;
+    const axisTop = padding.top;
+    const axisBottom = h - padding.bottom;
+    const axisRight = w - padding.right;
+    const plotWidth = axisRight - axisLeft;
+    const plotHeight = axisBottom - axisTop;
 
     // axes
     mCtx.strokeStyle = '#ccc';
+    mCtx.lineWidth = 1;
     mCtx.beginPath();
-    mCtx.moveTo(0, h - 20);
-    mCtx.lineTo(w, h - 20);
-    mCtx.moveTo(0, 0);
-    mCtx.lineTo(0, h);
+    mCtx.moveTo(axisLeft, axisTop);
+    mCtx.lineTo(axisLeft, axisBottom);
+    mCtx.lineTo(axisRight, axisBottom);
     mCtx.stroke();
 
-    // line plot
-    mCtx.strokeStyle = '#0074D9';
-    mCtx.lineWidth = 2;
-    mCtx.beginPath();
+    // axis ticks
+    mCtx.fillStyle = '#555';
+    mCtx.font = '11px sans-serif';
+    const yTicks = [0, 0.5, 1];
+    yTicks.forEach((val) => {
+      const y = axisBottom - (val * plotHeight);
+      mCtx.beginPath();
+      mCtx.moveTo(axisLeft - 5, y);
+      mCtx.lineTo(axisLeft, y);
+      mCtx.stroke();
+      mCtx.fillText(val.toFixed(1), axisLeft - 35, y + 4);
+    });
+
+    const maxPoints = Math.max(bunchHistory.length, avgBunchHistory.length);
+    const xTicks = [0, 0.5, 1];
+    xTicks.forEach((frac) => {
+      const x = axisLeft + frac * plotWidth;
+      mCtx.beginPath();
+      mCtx.moveTo(x, axisBottom);
+      mCtx.lineTo(x, axisBottom + 5);
+      mCtx.stroke();
+      const idx = Math.round(frac * Math.max(maxPoints - 1, 0));
+      mCtx.fillText(idx.toString(), x - 5, axisBottom + 18);
+    });
 
     const max = 1.0;
-    bunchHistory.forEach((val, i) => {
-      const x = (i / (bunchHistory.length - 1)) * w;
-      const y = h - (val / max) * (h - 20);
-      if (i === 0) mCtx.moveTo(x, y);
-      else mCtx.lineTo(x, y);
-    });
-    mCtx.stroke();
+    const series = [
+      { data: bunchHistory, color: '#0074D9', label: 'Bunch Score' },
+      { data: avgBunchHistory, color: '#FF4136', label: 'Avg Bunch Score' },
+    ];
 
-    // title
+    series.forEach(({ data, color }) => {
+      if (data.length < 2) return;
+      mCtx.strokeStyle = color;
+      mCtx.lineWidth = 2;
+      mCtx.beginPath();
+      const denom = Math.max(data.length - 1, 1);
+      data.forEach((val, i) => {
+        const clamped = Math.max(0, Math.min(max, val));
+        const x = axisLeft + (i / denom) * plotWidth;
+        const y = axisBottom - (clamped / max) * plotHeight;
+        if (i === 0) mCtx.moveTo(x, y);
+        else mCtx.lineTo(x, y);
+      });
+      mCtx.stroke();
+    });
+
+    // labels
     mCtx.fillStyle = '#222';
     mCtx.font = '12px sans-serif';
-    mCtx.fillText('Bunch Score (0–1)', 5, 12);
+    mCtx.fillText('Bunch Score (0–1)', axisLeft, axisTop - 5);
+    mCtx.textAlign = 'center';
+    mCtx.fillText('Time (oldest → newest)', (axisLeft + axisRight) / 2, h - 5);
+    mCtx.save();
+    mCtx.translate(15, h / 2);
+    mCtx.rotate(-Math.PI / 2);
+    mCtx.fillText('Score', 0, 0);
+    mCtx.restore();
+    mCtx.textAlign = 'left';
+
+    // legend
+    series.forEach(({ color, label }, idx) => {
+      const lx = axisRight - 120;
+      const ly = axisTop + idx * 16;
+      mCtx.fillStyle = color;
+      mCtx.fillRect(lx, ly - 8, 12, 12);
+      mCtx.fillStyle = '#222';
+      mCtx.fillText(label, lx + 18, ly + 2);
+    });
   }
 
   // === SPEED CONTROL ===
@@ -305,9 +412,43 @@ window.addEventListener("DOMContentLoaded", () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type })
         });
+        resetVisualizationState();
       } catch (err) {
         console.error('Failed to set PDF type:', err);
       }
+    });
+  }
+
+  async function updateTimer(minutes) {
+    try {
+      const res = await fetch('/timer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minutes })
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || 'Timer request failed');
+      updateTimerStatus(payload.timer);
+    } catch (err) {
+      console.error('Failed to update timer:', err);
+      if (timerStatusEl) timerStatusEl.textContent = 'Timer error';
+    }
+  }
+
+  if (startTimerBtn) {
+    startTimerBtn.addEventListener('click', async () => {
+      const val = timerMinutesInput ? parseFloat(timerMinutesInput.value || '0') : 0;
+      if (!Number.isFinite(val) || val <= 0) {
+        if (timerStatusEl) timerStatusEl.textContent = 'Enter minutes > 0';
+        return;
+      }
+      await updateTimer(val);
+    });
+  }
+
+  if (stopTimerBtn) {
+    stopTimerBtn.addEventListener('click', async () => {
+      await updateTimer(0);
     });
   }
 
